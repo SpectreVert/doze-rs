@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::error::Error;
 use std::fmt;
 
@@ -44,7 +44,8 @@ impl Registry {
     }
 
     pub fn register<F>(&mut self, id: String, factory: F)
-        where F: Fn() -> Box<dyn Procedure> + 'static
+    where
+        F: Fn() -> Box<dyn Procedure> + 'static,
     {
         self.procedures.insert(id, Box::new(factory));
     }
@@ -53,9 +54,7 @@ impl Registry {
         let factory = self
             .procedures
             .get(id)
-            .ok_or_else(|| {
-                ProcedureError::NotFound(id.to_string())
-            })?;
+            .ok_or_else(|| ProcedureError::NotFound(id.to_string()))?;
 
         Ok(factory())
     }
@@ -66,27 +65,27 @@ pub struct Location(String);
 pub trait Artifact {
     fn location(&self) -> Location;
 
-    fn creator(&self) -> Box<Rule>;
-    fn consumers(&self) -> Vec<Box<Rule>>;
+    fn creator_rule(&self) -> Option<String>;
+    fn consumer_rules(&self) -> Vec<String>;
 }
 
 pub enum ArtifactSelector {
     Inputs,
     Outputs,
     Both,
-    None
+    None,
 }
 
 pub struct RuleOptions {
-    pub order: ArtifactSelector,
+    pub ordered: ArtifactSelector,
     pub grouped: ArtifactSelector,
 }
 
 pub struct Rule {
     pub opts: RuleOptions,
     pub proc_id: ProcedureId,
-    pub inputs: Vec<Box<dyn Artifact>>,
-    pub outputs: Vec<Box<dyn Artifact>>,
+    pub input_ids: Vec<String>,
+    pub output_ids: Vec<String>,
 }
 
 pub struct Graph {
@@ -104,7 +103,16 @@ impl Graph {
     }
 }
 
-pub struct Plan {}
+pub struct Plan {
+    // The IDs of the Rules that are planned.
+    pub rules: Vec<String>,
+}
+
+impl Plan {
+    pub fn new() -> Self {
+        Self { rules: Vec::new() }
+    }
+}
 
 pub enum ResolveMode {
     Terse,
@@ -126,55 +134,123 @@ pub trait Resolver {
     fn resolve(&self, graph: &Graph, mode: ResolveMode) -> Result<Plan, PlanningError>;
 }
 
-pub struct Manifest {}
+// The TopologicalResolver does Kahn's algorithm to order the plan linearly.
+pub struct TopologicalResolver {}
 
-#[derive(Debug)]
-pub enum ExecuteError {}
+impl Resolver for TopologicalResolver {
+    fn resolve(&self, graph: &Graph, mode: ResolveMode) -> Result<Plan, PlanningError> {
+        let mut plan = Plan::new();
+        let mut queue: VecDeque<String> = VecDeque::new();
 
-impl Error for ExecuteError {}
+        // A batch is a group of artifacts. When such group is used to process a rule,
+        // they can be either inputs, or outputs.
+        // For now, we are looking for batches that have no parents at all.
+        'rule_loop: for (rule_id, rule) in graph.rules.iter() {
+            for input_id in rule.input_ids.iter() {
+                match graph.artifacts.get(input_id).unwrap().creator_rule() {
+                    Some(_) => continue 'rule_loop,
+                    None => continue,
+                }
+            }
+            queue.push_back(rule_id.clone());
+        }
 
-impl fmt::Display for ExecuteError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "not implemented yet!")
+        // Loop until the queue becomes empty.
+        while !queue.is_empty() {
+            let rule_id = queue.pop_front().unwrap();
+            plan.rules.push(rule_id.clone());
+
+            // For each output artifact of this rule, check their consumer rules to see
+            // if they are ready to be scheduled.
+            for output_id in graph.rules.get(&rule_id).unwrap().output_ids.iter() {
+                'consumer_rule_loop: for consumer_rule_id in graph
+                    .artifacts
+                    .get(output_id)
+                    .unwrap()
+                    .consumer_rules()
+                    .iter()
+                {
+                    for consumer_input_id in
+                        graph.rules.get(consumer_rule_id).unwrap().input_ids.iter()
+                    {
+                        if output_id == consumer_input_id {
+                            continue;
+                        } else {
+                            match graph
+                                .artifacts
+                                .get(consumer_input_id)
+                                .unwrap()
+                                .creator_rule()
+                            {
+                                None => continue,
+                                Some(creator_rule_id) => {
+                                    match plan.rules.iter().position(|scheduled_rule_id| {
+                                        *scheduled_rule_id == creator_rule_id
+                                    }) {
+                                        None => continue 'consumer_rule_loop,
+                                        Some(_) => continue,
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    // Maybe fixme... Somehow, we might need to check first if we didn't already schedule the rule.
+                    queue.push_back(consumer_rule_id.clone());
+                }
+            }
+        }
+
+        return Ok(plan);
     }
 }
 
-pub trait Executor {
-    fn exec(&self, plan: &Plan) -> Result<Manifest, ExecuteError>; // ofc this will need to return errors or logs.
-}
-
-#[derive(Debug)]
-pub enum CacheError {}
-
-impl Error for CacheError {}
-
-impl fmt::Display for CacheError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "not implemented yet!")
-    }
-}
-
-
-pub trait Cache {
-
-    // Artifacts
-    fn has_artifacts(&self, artifacts: &Vec<Box<dyn Artifact>>) -> bool;
-
-    fn store_artifacts(&self, artifacts: &Vec<Box<dyn Artifact>>) -> Option<CacheError>;
-
-    fn fetch_artifacts(&self, artifacts: &mut Vec<Box<dyn Artifact>>) -> Option<CacheError>;
-
-    // Graph state
-
-    fn primordial_rule_changed();
-
-    fn record_primordial_rule();
-
-    fn clear_primordial_rules();
-
-    fn get_plan();
-
-    fn clear_plan();
-
-    fn plan_rule();
-}
+// #[derive(Debug)]
+// pub enum ExecuteError {}
+//
+// impl Error for ExecuteError {}
+//
+// impl fmt::Display for ExecuteError {
+//     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+//         write!(f, "not implemented yet!")
+//     }
+// }
+//
+// pub trait Executor {
+//     fn exec(&self, plan: &Plan) -> Result<Manifest, ExecuteError>; // ofc this will need to return errors or logs.
+// }
+//
+// #[derive(Debug)]
+// pub enum CacheError {}
+//
+// impl Error for CacheError {}
+//
+// impl fmt::Display for CacheError {
+//     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+//         write!(f, "not implemented yet!")
+//     }
+// }
+//
+//
+// pub trait Cache {
+//
+//     // Artifacts
+//     fn has_artifacts(&self, artifacts: &Vec<Box<dyn Artifact>>) -> bool;
+//
+//     fn store_artifacts(&self, artifacts: &Vec<Box<dyn Artifact>>) -> Option<CacheError>;
+//
+//     fn fetch_artifacts(&self, artifacts: &mut Vec<Box<dyn Artifact>>) -> Option<CacheError>;
+//
+//     // Graph state
+//
+//     fn primordial_rule_changed();
+//
+//     fn record_primordial_rule();
+//
+//     fn clear_primordial_rules();
+//
+//     fn get_plan();
+//
+//     fn clear_plan();
+//
+//     fn plan_rule();
+// }

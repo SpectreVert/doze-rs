@@ -1,7 +1,3 @@
-[package]
-name = "doze-rs"
-version = "0.1.0"
-edition = "2024"
-
-[dependencies]
-clap = { version = "4.6.1", features = ["derive"] }
+[workspace]
+members = ["cli", "doze", "procedures/utils"]
+resolver = "3"

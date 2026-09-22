@@ -1,0 +1,8 @@
+[package]
+name = "doze-procedures-utils"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+doze = { path = "../../doze" }
+inventory = "0.3"

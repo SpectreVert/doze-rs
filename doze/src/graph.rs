@@ -54,6 +54,8 @@ impl Graph {
         proc_id: ProcedureId,
         registry: &Registry,
     ) -> Result<String, AddRuleError> {
+        let _span = tracing::debug_span!("add_rule").entered();
+
         if inputs.is_empty() {
             return Err(AddRuleError::NoInputs);
         }
@@ -120,11 +122,11 @@ impl Graph {
         }
 
         tracing::debug!(
-            rule_id = %checksum,
-            proc_id = ?rule.proc_id,
+            id = checksum,
+            proc = ?rule.proc_id,
             input_tags = ?rule.input_tags,
             output_tags = ?rule.output_tags,
-            "Rule added to Graph");
+            "rule registered");
         self.rules.insert(checksum.clone(), rule);
         Ok(checksum)
     }

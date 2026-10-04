@@ -21,6 +21,7 @@ use crate::{ArtifactTag, ProcedureError, ProcedureId, Registry};
 pub enum RuleError {
     Procedure(ProcedureError),
     SourceReadFailed(String, String),
+    OutputRemovalFailed(String, String),
 }
 
 impl fmt::Display for RuleError {
@@ -29,6 +30,9 @@ impl fmt::Display for RuleError {
             RuleError::Procedure(e) => write!(f, "{e}"),
             RuleError::SourceReadFailed(tag, msg) => {
                 write!(f, "could not open artifact ({tag}) for reading: {msg}")
+            }
+            RuleError::OutputRemovalFailed(tag, msg) => {
+                write!(f, "could not remove previous output ({tag}): {msg}")
             }
         }
     }
@@ -105,6 +109,16 @@ impl Rule {
         let mut proc = registry
             .create(&self.proc_id.0)
             .map_err(RuleError::Procedure)?;
+
+        // Remove previous outputs so the Procedure always creates fresh files. An existing output
+        // may be a hardlink into the cache, and writing to it in place would corrupt the cache.
+        for tag in &self.output_tags {
+            match fs::remove_file(&tag.0) {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => return Err(RuleError::OutputRemovalFailed(tag.0.clone(), e.to_string())),
+            }
+        }
 
         proc.exec(self).map_err(RuleError::Procedure)?;
         tracing::debug!(

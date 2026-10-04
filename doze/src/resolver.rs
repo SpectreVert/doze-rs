@@ -1,6 +1,9 @@
 use std::collections::VecDeque;
 use std::error::Error;
 use std::fmt;
+use std::time;
+
+use tracing::{debug, error, info_span};
 
 use crate::Graph;
 use crate::PrimordialLedger;
@@ -32,7 +35,7 @@ pub enum PlanningError {
 impl fmt::Display for PlanningError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            PlanningError::Cycle => write!(f, "cycle detected in Graph"),
+            PlanningError::Cycle => write!(f, "cycle in graph"),
             PlanningError::SourceUnreadable(e) => {
                 write!(f, "could not compute source checksum: {e}")
             }
@@ -73,7 +76,9 @@ impl Resolver for TopologicalResolver {
         graph: &Graph,
         ledger: &mut dyn PrimordialLedger,
     ) -> Result<Plan, PlanningError> {
-        let _span = tracing::info_span!("resolve", rule_count = graph.rules.len()).entered();
+        let start_time = time::Instant::now();
+        let _span = info_span!("resolve").entered();
+        debug!(rules_nb = graph.rules.len(), "starting");
 
         let mut plan = Plan::new();
         let mut queue: VecDeque<String> = VecDeque::new();
@@ -104,6 +109,7 @@ impl Resolver for TopologicalResolver {
             {
                 queue.push_back(rule_id.clone());
             }
+            ledger.record_rule(rule_id, &source_checksum);
         }
 
         // Loop until the queue becomes empty.
@@ -145,24 +151,22 @@ impl Resolver for TopologicalResolver {
                             }
                         }
                     }
-                    // Maybe fixme...
-                    // We might need to check first if we didn't already schedule the rule.
                     queue.push_back(consumer_rule_id.clone());
                 }
             }
         }
 
-        if plan.rules.len() != graph.rules.len() {
-            tracing::error!(
-                planned = plan.rules.len(),
-                total = graph.rules.len(),
+        if ! matches!(mode, ResolveMode::Terse) && plan.rules.len() != graph.rules.len() {
+            error!(
+                planned_nb = plan.rules.len(),
+                total_nb = graph.rules.len(),
                 "{}",
                 PlanningError::Cycle
             );
             return Err(PlanningError::Cycle);
         }
 
-        tracing::info!(planned = plan.rules.len());
+        debug!(planned_nb = plan.rules.len(), elapsed = ?start_time.elapsed(), "complete");
         Ok(plan)
     }
 }

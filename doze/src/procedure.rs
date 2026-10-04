@@ -61,7 +61,7 @@ impl Registry {
     where
         F: Fn() -> Box<dyn Procedure> + 'static,
     {
-        tracing::debug!(procedure_id = id, "registered built-in procedure");
+        tracing::debug!(id = id, "registered procedure");
         self.procedures.insert(id, Box::new(factory));
     }
 

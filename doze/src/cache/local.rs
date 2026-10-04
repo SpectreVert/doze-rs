@@ -73,7 +73,7 @@ impl ArtifactStore for LocalCache {
         source_checksum: &str,
         into: &[ArtifactTag],
     ) -> Result<(), CacheError> {
-        let _span = tracing::debug_span!("ensure");
+        let _span = tracing::debug_span!("ensure").entered();
         let outputs_dir = self.outputs_dir(rule_checksum, source_checksum);
         if !outputs_dir.exists() {
             return Err(CacheError::NotFound(format!(
@@ -86,7 +86,11 @@ impl ArtifactStore for LocalCache {
             let dest = Path::new(&tag.0);
 
             if dest.exists() {
-                if same_file(dest, &cached_path).unwrap_or(false) {
+                // Skip if the output was already fetched (same file), or was freshly built and
+                // matches the cache (same contents, kept as an independent copy).
+                if same_file(dest, &cached_path).unwrap_or(false)
+                    || same_contents(dest, &cached_path).unwrap_or(false)
+                {
                     tracing::debug!("fetch=skip");
                     continue;
                 }
@@ -113,6 +117,13 @@ fn same_file(a: &Path, b: &Path) -> std::io::Result<bool> {
     use std::os::unix::fs::MetadataExt;
     let (a_meta, b_meta) = (fs::metadata(a)?, fs::metadata(b)?);
     Ok(a_meta.dev() == b_meta.dev() && a_meta.ino() == b_meta.ino())
+}
+
+fn same_contents(a: &Path, b: &Path) -> std::io::Result<bool> {
+    if fs::metadata(a)?.len() != fs::metadata(b)?.len() {
+        return Ok(false);
+    }
+    Ok(fs::read(a)? == fs::read(b)?)
 }
 
 impl PrimordialLedger for LocalCache {

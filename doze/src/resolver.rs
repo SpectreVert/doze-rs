@@ -1,4 +1,4 @@
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::error::Error;
 use std::fmt;
 use std::time;
@@ -78,87 +78,74 @@ impl Resolver for TopologicalResolver {
     ) -> Result<Plan, PlanningError> {
         let start_time = time::Instant::now();
         let _span = info_span!("resolve").entered();
-        debug!(rules_nb = graph.rules.len(), "starting");
+        debug!(graph_rules_nb = graph.rules.len(), "starting");
 
+        // The plan contains the ordered list of Rules that must be executed to bring the Graph up-to-date.
         let mut plan = Plan::new();
-        let mut queue: VecDeque<String> = VecDeque::new();
+        // The queue holds the Rules whose dependencies (if any) have already gone through it,
+        // and a marker for dirtyness which indicates if the Rule must be put in the plan.
+        let mut queue: VecDeque<(&str, bool)> = VecDeque::with_capacity(graph.rules.len());
+        // Pending tracks, for each Rule with dependencies, the amount of dependencies that haven't
+        // gone through the queue yet, and whether any of these dependencies need to run.
+        let mut pending: HashMap<&str, (usize, bool)> = HashMap::with_capacity(graph.rules.len());
+        // Count to keep track of the amount of Rules that were ordered and considered for planning.
+        // If ordered_nb != graph.rules.len(), then we have a cycle in the Graph.
+        let mut ordered_nb = 0;
 
-        // A batch is a group of artifacts. When such group is part of a Rule,
-        // it can be either an input or output batch.
-        // For now, we are looking for input batches that have no parents Rules.
-        'rule_loop: for (rule_id, rule) in graph.rules.iter() {
-            for input_tag in rule.input_tags.iter() {
-                if graph
-                    .artifacts
-                    .get(input_tag)
-                    .unwrap()
-                    .creator_rule()
-                    .is_some()
-                {
-                    continue 'rule_loop;
-                }
+        // First we cycle through the Graph to find primordial Rules, i.e Rules which have no dependencies.
+        for (rule_id, rule) in graph.rules.iter() {
+            let parents_nb = rule
+                .input_tags
+                .iter()
+                .filter(|tag| graph.artifacts.get(*tag).unwrap().creator_rule().is_some())
+                .count();
+
+            if parents_nb > 0 {
+                // Add to pending any non-primordial Rules. We don't know yet if they are dirty.
+                pending.insert(rule_id, (parents_nb, false));
+                continue;
             }
 
-            // Rule must be registered in the PrimordialLedger.
+            // This is a primordial Rule, add it to the queue (it is by definition ready for ordering).
+            // Register it in the ledger so that next run we know immediately if it is dirty or not.
             let source_checksum = rule
                 .source_checksum()
                 .map_err(PlanningError::SourceUnreadable)?;
 
-            if !ledger.was_rule_in_last_run(rule_id, &source_checksum)
-                || matches!(mode, ResolveMode::Full)
-            {
-                queue.push_back(rule_id.clone());
-            }
+            let is_dirty = !ledger.was_rule_in_last_run(rule_id, &source_checksum)
+                || matches!(mode, ResolveMode::Full);
+
             ledger.record_rule(rule_id, &source_checksum);
+            queue.push_back((rule_id, is_dirty));
         }
 
-        // Loop until the queue becomes empty.
-        while !queue.is_empty() {
-            let rule_id = queue.pop_front().unwrap();
-            plan.rules.push(rule_id.clone());
+        // Every Rule is ordered and makes it into the queue. This happens regardless of the mode
+        // and helps us always detect cycles. However, only dirty Rules make it into the Plan.
+        while let Some((rule_id, is_dirty)) = queue.pop_front() {
+            ordered_nb += 1;
+            if is_dirty {
+                plan.rules.push(rule_id.to_string());
+            }
 
-            // For each output Artifact of this Rule, check their consumer Rules to see
-            // if they are ready to be scheduled.
-            for output_id in graph.rules.get(&rule_id).unwrap().output_tags.iter() {
-                'consumer_rule_loop: for consumer_rule_id in graph
-                    .artifacts
-                    .get(output_id)
-                    .unwrap()
-                    .consumer_rules()
-                    .iter()
-                {
-                    for consumer_input_id in
-                        graph.rules.get(consumer_rule_id).unwrap().input_tags.iter()
-                    {
-                        if output_id == consumer_input_id {
-                            continue;
-                        } else {
-                            match graph
-                                .artifacts
-                                .get(consumer_input_id)
-                                .unwrap()
-                                .creator_rule()
-                            {
-                                None => continue,
-                                Some(creator_rule_id) => {
-                                    match plan.rules.iter().position(|scheduled_rule_id| {
-                                        *scheduled_rule_id == creator_rule_id
-                                    }) {
-                                        None => continue 'consumer_rule_loop,
-                                        Some(_) => continue,
-                                    }
-                                }
-                            }
-                        }
+            for output_tag in graph.rules.get(rule_id).unwrap().output_tags.iter() {
+                for consumer_rule_id in graph.artifacts.get(output_tag).unwrap().consumer_rules() {
+                    let consumer_rule_id = consumer_rule_id.as_str();
+                    let (parents_nb, consumer_dirty) = pending.get_mut(consumer_rule_id).unwrap();
+
+                    *parents_nb -= 1;
+                    *consumer_dirty |= is_dirty;
+
+                    // Ready for ordering.
+                    if *parents_nb == 0 {
+                        queue.push_back((consumer_rule_id, *consumer_dirty));
                     }
-                    queue.push_back(consumer_rule_id.clone());
                 }
             }
         }
 
-        if ! matches!(mode, ResolveMode::Terse) && plan.rules.len() != graph.rules.len() {
+        if ordered_nb != graph.rules.len() {
             error!(
-                planned_nb = plan.rules.len(),
+                ordered_nb,
                 total_nb = graph.rules.len(),
                 "{}",
                 PlanningError::Cycle
@@ -371,6 +358,94 @@ mod tests {
         let result = TopologicalResolver {}.resolve(ResolveMode::Full, &graph, &mut NullLedger);
 
         assert!(matches!(result, Err(PlanningError::Cycle)));
+    }
+
+    #[test]
+    fn cyclic_terse() {
+        let mut graph = Graph::new();
+        let registry = registry();
+        let dir = TempDir::new().unwrap();
+
+        add(&mut graph, &["src"], &["first"], &registry, dir.path());
+        add(
+            &mut graph,
+            &["first", "third"],
+            &["second"],
+            &registry,
+            dir.path(),
+        );
+        add(&mut graph, &["second"], &["third"], &registry, dir.path());
+
+        let result = TopologicalResolver {}.resolve(ResolveMode::Terse, &graph, &mut NullLedger);
+
+        assert!(matches!(result, Err(PlanningError::Cycle)));
+    }
+
+    // Reports every Rule in `unchanged` as part of the last run.
+    struct LastRunLedger {
+        unchanged: Vec<String>,
+    }
+    impl PrimordialLedger for LastRunLedger {
+        fn was_rule_in_last_run(&self, rule_checksum: &str, _source_checksum: &str) -> bool {
+            self.unchanged.iter().any(|id| id == rule_checksum)
+        }
+
+        fn record_rule(&mut self, _rule_checksum: &str, _source_checksum: &str) {}
+        fn flush(&mut self) -> Result<(), CacheError> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn terse_one_parent_unchanged() {
+        let mut graph = Graph::new();
+        let registry = registry();
+        let dir = TempDir::new().unwrap();
+
+        let a = add(&mut graph, &["src1"], &["first"], &registry, dir.path());
+        let b = add(&mut graph, &["src2"], &["second"], &registry, dir.path());
+        let c = add(
+            &mut graph,
+            &["first", "second"],
+            &["final"],
+            &registry,
+            dir.path(),
+        );
+
+        let mut ledger = LastRunLedger { unchanged: vec![b] };
+        let plan = TopologicalResolver {}
+            .resolve(ResolveMode::Terse, &graph, &mut ledger)
+            .unwrap();
+
+        assert_eq!(plan.rules, vec![a, c]);
+    }
+
+    #[test]
+    fn consumer_of_several_outputs_of_one_rule() {
+        let mut graph = Graph::new();
+        let registry = registry();
+        let dir = TempDir::new().unwrap();
+
+        let a = add(
+            &mut graph,
+            &["src"],
+            &["first", "second"],
+            &registry,
+            dir.path(),
+        );
+        let b = add(
+            &mut graph,
+            &["first", "second"],
+            &["final"],
+            &registry,
+            dir.path(),
+        );
+
+        let plan = TopologicalResolver {}
+            .resolve(ResolveMode::Full, &graph, &mut NullLedger)
+            .unwrap();
+
+        assert_eq!(plan.rules, vec![a, b]);
     }
 
     mod ordering {

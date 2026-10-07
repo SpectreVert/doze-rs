@@ -54,10 +54,15 @@ pub fn execute(
 ) -> Result<ExecutionReport, ExecuteError> {
     let start_time = time::Instant::now();
     let _span = info_span!("execute").entered();
-    info!(rules_nb = graph.rules.len(), "starting");
+    debug!(graph_rules_nb = graph.rules.len(), planned_rules_nb = plan.rules.len(), "starting");
 
     let mut executed = 0;
     let mut fetched = 0;
+
+    if plan.rules.is_empty() {
+        info!("nothing to do");
+        return Ok(ExecutionReport { executed, fetched });
+    }
 
     for rule_checksum in &plan.rules {
         let _rule_span = info_span!("rule", id = rule_checksum).entered();

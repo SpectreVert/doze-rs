@@ -20,7 +20,7 @@ impl Artifact {
         self.creator.clone()
     }
 
-    pub(crate) fn consumer_rules(&self) -> Vec<String> {
-        self.consumers.clone()
+    pub(crate) fn consumer_rules(&self) -> &[String] {
+        &self.consumers
     }
 }

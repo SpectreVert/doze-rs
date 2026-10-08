@@ -2,7 +2,7 @@ mod log;
 
 use clap::{Parser, Subcommand};
 
-use doze::{execute, Graph, LocalCache, ProcedureId, ResolveMode, Resolver, TopologicalResolver};
+use doze::{execute, Graph, LocalCache, ProcedureId, ResolveMode, Resolver, Registry, TopologicalResolver};
 use doze_procedures_utils as _;
 
 #[derive(Parser)]
@@ -27,7 +27,7 @@ fn main() {
 
             let mut graph = Graph::new();
             let resolver = TopologicalResolver {};
-            let registry = doze::Registry::with_builtins();
+            let registry = Registry::with_builtins();
             let copy_proc = ProcedureId("utils:copy".to_string());
 
             graph
@@ -85,7 +85,6 @@ fn main() {
             let plan = resolver
                 .resolve(ResolveMode::Terse, &graph, &mut cache)
                 .unwrap();
-
 
             let _report = execute(&plan, &mut graph, &registry, &mut cache);
         }

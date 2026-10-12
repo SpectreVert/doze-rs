@@ -1,8 +1,11 @@
 mod log;
 
+use std::path::Path;
+
 use clap::{Parser, Subcommand};
 
-use doze::{execute, Graph, LocalCache, ProcedureId, ResolveMode, Resolver, Registry, TopologicalResolver};
+use doze::{execute, LocalCache, ResolveMode, Resolver, Registry, TopologicalResolver};
+use dozefile::yaml::{from_path, build_graph};
 use doze_procedures_utils as _;
 
 #[derive(Parser)]
@@ -25,61 +28,11 @@ fn main() {
             let _guard = log::init();
             tracing::debug!("cmd [run]");
 
-            let mut graph = Graph::new();
             let resolver = TopologicalResolver {};
             let registry = Registry::with_builtins();
-            let copy_proc = ProcedureId("utils:copy".to_string());
 
-            graph
-                .add_rule(
-                    vec!["utils.c".into()],
-                    vec!["zeub.exe".into()],
-                    "".into(),
-                    "".into(),
-                    copy_proc.clone(),
-                    &registry,
-                )
-                .unwrap();
-            graph
-                .add_rule(
-                    vec!["main.c".into()],
-                    vec!["a.out".into()],
-                    "".into(),
-                    "".into(),
-                    copy_proc.clone(),
-                    &registry,
-                )
-                .unwrap();
-            graph
-                .add_rule(
-                    vec!["myheader.h".into()],
-                    vec!["main.c".into()],
-                    "".into(),
-                    "".into(),
-                    copy_proc.clone(),
-                    &registry,
-                )
-                .unwrap();
-            graph
-                .add_rule(
-                    vec!["root.config.h".into()],
-                    vec!["myheader.h".into()],
-                    "".into(),
-                    "".into(),
-                    copy_proc.clone(),
-                    &registry,
-                )
-                .unwrap();
-            graph
-                .add_rule(
-                    vec!["myheader.h".into()],
-                    vec!["utils.c".into()],
-                    "".into(),
-                    "".into(),
-                    copy_proc.clone(),
-                    &registry,
-                )
-                .unwrap();
+            let dozefile = from_path(Path::new("Dozefile.yaml")).unwrap();
+            let mut graph = build_graph(dozefile, &registry).unwrap();
 
             let mut cache = LocalCache::new(".doze").unwrap();
             let plan = resolver

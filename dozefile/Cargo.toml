@@ -1,0 +1,9 @@
+[package]
+name = "dozefile"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+doze = { path = "../doze" }
+serde = { version = "1.0.229", features = ["derive"] }
+serde-saphyr = { version = "1.3.0", default-features = false, features = ["deserialize"] }

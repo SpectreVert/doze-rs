@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 doze = { path = "../doze" }
+dozefile = { path = "../dozefile" }
 doze-procedures-utils = { path = "../procedures/utils" }
 clap = { version = "4.6.1", features = ["derive"] }
 tracing = "0.1"

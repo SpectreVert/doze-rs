@@ -1,0 +1,5 @@
+rules:
+  - do: utils:copy
+    inputs: [doze-cli]
+    in: "./target/debug"
+    outputs: [doze-cli]

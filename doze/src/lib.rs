@@ -5,6 +5,7 @@ pub mod graph;
 pub mod procedure;
 pub mod resolver;
 pub mod rule;
+pub mod watcher;
 
 pub use artifact::{Artifact, ArtifactTag};
 pub use cache::{ArtifactStore, CacheError, LocalCache, PrimordialLedger};
